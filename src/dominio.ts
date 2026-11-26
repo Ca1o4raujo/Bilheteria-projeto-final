@@ -5,77 +5,100 @@ import type { EventoInfo } from "./tipos.ts";
 // ------------------------------------------------------------------ Erros de negócio
 
 // Classe base abstrata: ninguém lança um "ErroDeNegocio" genérico, só as filhas.
-// Cada filha diz o seu status HTTP, e o servidor.ts usa esse status na resposta.
+// Cada erro guarda o seu status HTTP, e o servidor.ts usa esse status na resposta.
 export abstract class ErroDeNegocio extends Error {
-  abstract readonly status: number;
+  readonly status: number;
 
-  constructor(mensagem: string) {
+  constructor(mensagem: string, status: number) {
     super(mensagem);
+    this.status = status;
     this.name = new.target.name; // o nome da classe filha, ex.: "PoltronaOcupadaErro"
   }
 }
 
-// 400: o pedido veio errado (lista vazia, poltrona que não existe, poltrona repetida...).
+// 400: pedido ou poltrona inválidos.
 export class DadosInvalidosErro extends ErroDeNegocio {
-  readonly status = 400;
+  constructor(mensagem: string) {
+    super(mensagem, 400);
+  }
 }
 
-// 404: o evento pedido não existe.
+// 404: o evento não existe.
 export class NaoEncontradoErro extends ErroDeNegocio {
-  readonly status = 404;
+  constructor(mensagem: string) {
+    super(mensagem, 404);
+  }
 }
 
-// 409: a poltrona já foi vendida para outra pessoa (conflito).
+// 409: a poltrona já foi vendida.
 export class PoltronaOcupadaErro extends ErroDeNegocio {
-  readonly status = 409;
+  constructor(mensagem: string) {
+    super(mensagem, 409);
+  }
 }
 
-// 502: a operadora de pagamento recusou ou não respondeu a tempo.
+// 502: a operadora não aprovou o pagamento.
 export class PagamentoErro extends ErroDeNegocio {
-  readonly status = 502;
+  constructor(mensagem: string) {
+    super(mensagem, 502);
+  }
 }
 
 // ------------------------------------------------------------------ Evento
 
 export class Evento {
-  // Campo privado de verdade (#): nada fora da classe consegue ler ou mudar as poltronas.
-  #vendidas = new Set<number>();
+  readonly id: number;
+  readonly nome: string;
+  readonly preco: number;
+  readonly capacidade: number;
 
-  constructor(
-    readonly id: number,
-    readonly nome: string,
-    readonly preco: number,
-    readonly capacidade: number,
-  ) {}
+  // Campo privado (#): só o código dentro da classe enxerga a lista de poltronas vendidas.
+  #vendidas: number[] = [];
+
+  constructor(id: number, nome: string, preco: number, capacidade: number) {
+    this.id = id;
+    this.nome = nome;
+    this.preco = preco;
+    this.capacidade = capacidade;
+  }
 
   // Só leitura: sem setter, ninguém muda o disponível por fora.
   get disponivel(): number {
-    return this.capacidade - this.#vendidas.size;
+    return this.capacidade - this.#vendidas.length;
   }
 
   // Tudo ou nada: primeiro confere TODAS as poltronas, só depois marca.
   // Se alguma falhar, o erro sai antes de marcar qualquer uma.
   reservar(poltronas: number[]): void {
-    this.#conferirLista(poltronas);
-    if (new Set(poltronas).size !== poltronas.length) {
-      throw new DadosInvalidosErro("a mesma poltrona aparece duas vezes no pedido");
+    if (!Array.isArray(poltronas) || poltronas.length === 0) {
+      throw new DadosInvalidosErro("nenhuma poltrona informada");
     }
-    for (const p of poltronas) {
-      if (this.#vendidas.has(p)) throw new PoltronaOcupadaErro(`poltrona ${p} já está ocupada`);
-    }
-    for (const p of poltronas) this.#vendidas.add(p);
+    poltronas.forEach((p, i) => {
+      if (!Number.isInteger(p) || p < 1 || p > this.capacidade) {
+        throw new DadosInvalidosErro(`poltrona ${p} não existe neste evento`);
+      }
+      if (poltronas.indexOf(p) !== i) {
+        throw new DadosInvalidosErro(`poltrona ${p} repetida no pedido`);
+      }
+      if (this.#vendidas.includes(p)) {
+        throw new PoltronaOcupadaErro(`poltrona ${p} já foi vendida`);
+      }
+    });
+    // Só chega aqui se todas passaram: agora marca.
+    this.#vendidas.push(...poltronas);
   }
 
-  // Devolve poltronas para a venda (ex.: quando o pagamento falha). Também é tudo ou nada.
+  // Devolve as poltronas para a venda (a bilheteria usa quando o pagamento falha).
   liberar(poltronas: number[]): void {
-    this.#conferirLista(poltronas);
     for (const p of poltronas) {
-      if (!this.#vendidas.has(p)) throw new DadosInvalidosErro(`poltrona ${p} não estava vendida`);
+      if (!this.#vendidas.includes(p)) {
+        throw new DadosInvalidosErro(`poltrona ${p} não estava vendida`);
+      }
     }
-    for (const p of poltronas) this.#vendidas.delete(p);
+    this.#vendidas = this.#vendidas.filter((p) => !poltronas.includes(p));
   }
 
-  // Os dados públicos do evento, no formato do EventoInfo.
+  // Os 5 campos do evento, no formato do EventoInfo.
   info(): EventoInfo {
     return {
       id: this.id,
@@ -84,17 +107,5 @@ export class Evento {
       capacidade: this.capacidade,
       disponivel: this.disponivel,
     };
-  }
-
-  // Método privado: a lista não pode ser vazia e cada poltrona vai de 1 até a capacidade.
-  #conferirLista(poltronas: number[]): void {
-    if (!Array.isArray(poltronas) || poltronas.length === 0) {
-      throw new DadosInvalidosErro("nenhuma poltrona informada");
-    }
-    for (const p of poltronas) {
-      if (!Number.isInteger(p) || p < 1 || p > this.capacidade) {
-        throw new DadosInvalidosErro(`poltrona ${p} não existe neste evento`);
-      }
-    }
   }
 }
